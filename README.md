@@ -132,6 +132,38 @@ hub'a da yük olurdu.
 
 ---
 
+## Güncelleme ve sürümleme
+
+Sürüm **sabitlenmez**: kurulan her zaman deponun son hâlidir. Karşılığında bir kural
+zorunlu hâle gelir — **her yayında sürüm numarası yükseltilmelidir.**
+
+Sebep ölçüldü: pip, doğrudan git URL'i verilen bir paketi depoyu klonlayıp metadata'sını
+okuduktan sonra sürüm numarasına bakar. Numara kuruluyla aynıysa **kurulumu atlar** ve
+`-U` bunu değiştirmez:
+
+| Komut | Sürüm aynıysa | Sürüm yükselmişse |
+|---|---|---|
+| `pip install -r requirements.txt` | atlar | kurar |
+| `pip install -U ...` | atlar | kurar |
+| `pip install --force-reinstall ...` | kurar | kurar |
+
+Yani numara yükseltilmeden yapılan bir yayın, kurulu projelere **hiç ulaşmaz** ve bu
+sessizce olur — paketin bütün tasarımının karşı durduğu arıza biçimi.
+
+Sürüm çıkarma sırası:
+
+1. `pyproject.toml` içindeki `version` **ve** `src/nabiz/reporter.py` içindeki
+   `SDK_VERSION` birlikte yükseltilir. İkisi ayrışırsa panelde yanlış SDK sürümü görünür.
+2. `CHANGELOG.md`'ye giriş.
+3. `python -m unittest discover -s tests`
+4. Commit, `git tag vX.Y.Z`, `git push origin vX.Y.Z`.
+5. Kurulu projelerde `pip install -r requirements.txt`, ardından `nabiz-durum` ile
+   doğrulama. Panelde SDK sürümünün yenilendiği görülmelidir.
+
+Acil bir düzeltme sürüm numarası yükseltmeden dağıtılacaksa tek yol
+`--force-reinstall`; ama o durumda panel eski sürüm numarasını göstermeye devam eder ve
+hangi sunucunun güncellendiği izlenemez.
+
 ## Test
 
 ```bash
