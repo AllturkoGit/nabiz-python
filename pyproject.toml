@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "allturko-nabiz"
+version = "0.1.0"
+description = "Nabız Hub için Python raporlayıcı — sunucu hataları, yavaş istekler, canlılık"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "AllTurko" }]
+requires-python = ">=3.9"
+keywords = ["monitoring", "error-tracking", "flask", "wsgi", "nabiz"]
+
+# Bağımlılık YOK ve olmayacak: paket izlenen projelere kurulur, her bağımlılık
+# orada bir sürüm çakışması riskidir. Flask entegrasyonu flask'ı yalnızca
+# kullanıldığı anda ve kendi içinde import eder.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/AllturkoGit/nabiz-python"
+Hub = "https://github.com/AllturkoGit/nabiz-hub"
+
+[project.scripts]
+nabiz-durum = "nabiz.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
