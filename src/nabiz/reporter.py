@@ -20,7 +20,7 @@ import traceback
 from . import scrubber
 from .client import HubClient
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.1.1"
 
 #: Kuyruk derinliği. Hata fırtınasında bellek sınırı; hub'ın istek başına
 #: kabul ettiği 8 olayın epey üstünde, normal işleyişte hiç dolmaz.
@@ -41,6 +41,33 @@ KINDS = (
 #: Hub'ın kabul ettiği ortamlar. Küme dışıysa olay atılır.
 ENVIRONMENTS = ("production", "staging", "local")
 
+#: Ortam takma adları — Node ve Laravel paketleriyle aynı tablo.
+_ENV_ALIASES = {
+    "production": "production", "prod": "production", "live": "production",
+    "staging": "staging", "stage": "staging", "stg": "staging", "preprod": "staging", "uat": "staging",
+    "local": "local", "dev": "local", "development": "local", "test": "local", "testing": "local",
+}
+
+
+def normalize_env(value):
+    """Ortam adını hub'ın kabul ettiği karşılığa çevirir.
+
+    Hub yalnızca production/staging/local kabul ediyor. Eskiden tanınmayan
+    değer sessizce "production" sayılıyordu: ``APP_ENV=testing`` ile çalışan
+    bir kurulumun verisi canlı verinin arasına karışıyordu. Artık takma adlar
+    çevrilir; tanınmayan değer olduğu gibi gider (hub onu panelde "ortam"
+    reddi olarak sayar) ve ``nabiz-durum`` hata verir.
+    """
+    if value is None:
+        return "production"
+
+    text = str(value).strip()
+
+    if not text:
+        return "production"
+
+    return _ENV_ALIASES.get(text.lower(), text)
+
 
 class Reporter:
     def __init__(
@@ -58,7 +85,7 @@ class Reporter:
     ):
         self.client = HubClient(url=url, key=key, secret=secret, timeout=timeout)
         self.enabled = enabled
-        self.env = env if env in ENVIRONMENTS else "production"
+        self.env = normalize_env(env)
         self.release = release
         self.source = "ssr" if source == "ssr" else "server"
         self.slow_request_ms = slow_request_ms
@@ -124,12 +151,7 @@ class Reporter:
         uygulamaya da hub'a da yük olurdu.
         """
         try:
-            if not self.configured():
-                return None
-
-            slow = duration_ms >= self.slow_request_ms
-
-            if not slow and status < 500:
+            if not self.wants_request(status, duration_ms):
                 return None
 
             label = f"{method} {route}"
@@ -146,11 +168,27 @@ class Reporter:
                     "method": method,
                     "status": status,
                     "duration_ms": round(duration_ms),
+                    # Node ve Laravel'le aynı alan; ölçülemezse gönderilmez.
+                    "memory_mb": memory_mb(),
                 },
                 block=block,
             )
         except Exception:  # noqa: BLE001
             return None
+
+    def wants_request(self, status, duration_ms):
+        """Bu istek gönderilecek mi: yapılandırılmış ve (5xx ya da yavaş).
+
+        Entegrasyonlar rota desenini yalnızca ``True`` ise hesaplar; her hızlı
+        200 için yönlendirici taranmasın.
+        """
+        try:
+            if not self.configured():
+                return False
+
+            return status >= 500 or duration_ms >= self.slow_request_ms
+        except Exception:  # noqa: BLE001
+            return False
 
     def heartbeat(self, block=True):
         """"Buradayım" — olay taşımayan canlılık isteği.
@@ -329,3 +367,26 @@ class Reporter:
                 return True
 
         return False
+
+
+def memory_mb():
+    """Sürecin tepe bellek kullanımı (RSS), MB. Ölçülemezse ``None``.
+
+    ``resource`` Windows'ta yok. ``ru_maxrss`` Linux'ta KB, macOS'ta bayt.
+    """
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    try:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not isinstance(peak, (int, float)) or peak <= 0:
+        return None
+
+    divisor = 1048576 if sys.platform == "darwin" else 1024
+
+    return int(round(peak / divisor))

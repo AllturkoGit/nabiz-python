@@ -26,12 +26,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+#: Zaman aşımı sınırları (saniye); kardeş paketlerle aynı.
+MIN_TIMEOUT = 0.1
+MAX_TIMEOUT = 10.0
+
+
 class HubClient:
     def __init__(self, url=None, key=None, secret=None, timeout=2.0):
         self.url = url or None
         self.key = key or None
         self.secret = secret or None
-        self.timeout = timeout
+        self.timeout = timeout_seconds(timeout)
         self._opener = urllib.request.build_opener(_NoRedirect)
 
     def configured(self):
@@ -125,3 +130,27 @@ class HubClient:
             body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         return body if len(body) <= MAX_BODY_BYTES else None
+
+
+def timeout_seconds(value):
+    """``NABIZ_TIMEOUT`` saniye; 100 ve üstü milisaniye sayılır.
+
+    Node paketi aynı adla milisaniye bekliyor. ``2000`` yazan birinin süreci
+    hub'a 2000 saniye bağlaması, izleme paketinin uygulamayı kilitlemesi
+    demekti. Kardeş paketlerle ortak kural:
+
+    - geçersiz, sıfır/eksi, NaN ya da sonsuz → 2 sn;
+    - sonuç [0.1, 10] saniyeye sıkıştırılır: 50 yazan 50 sn beklemesin,
+      0.01 yazan her gönderimi zaman aşımına düşürmesin.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 2.0
+
+    if number != number or number <= 0 or number == float("inf"):
+        return 2.0
+
+    seconds = number / 1000 if number >= 100 else number
+
+    return min(max(seconds, MIN_TIMEOUT), MAX_TIMEOUT)

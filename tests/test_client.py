@@ -85,5 +85,26 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(302, result["status"])
 
 
+class TimeoutTest(unittest.TestCase):
+    """NABIZ_TIMEOUT: Node milisaniye bekliyor; aynı adla 2000 yazılınca süreç
+    hub'a 2000 saniye bağlanırdı."""
+
+    def test_saniye_ve_milisaniye(self):
+        from nabiz.client import timeout_seconds
+
+        for girdi, beklenen in ((2, 2.0), ("2", 2.0), ("0.5", 0.5), (2000, 2.0),
+                                ("1500", 1.5), (0, 2.0), ("abc", 2.0), (None, 2.0),
+                                (-1, 2.0), ("nan", 2.0), ("inf", 2.0), (float("inf"), 2.0),
+                                ("-inf", 2.0)):
+            self.assertEqual(beklenen, timeout_seconds(girdi), girdi)
+
+    def test_sinirlara_sikistirilir(self):
+        # Ortak kural: sonuç [0.1, 10] saniye.
+        from nabiz.client import timeout_seconds
+
+        for girdi, beklenen in ((50, 10.0), (99, 10.0), (100, 0.1), (60000, 10.0),
+                                ("0.01", 0.1), (10, 10.0), (0.1, 0.1)):
+            self.assertEqual(beklenen, timeout_seconds(girdi), girdi)
+
 if __name__ == "__main__":
     unittest.main()

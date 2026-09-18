@@ -61,5 +61,36 @@ class ScrubberTest(unittest.TestCase):
         self.assertIsNone(scrubber.sql(""))
 
 
+    # Yükleme dosya adları okunur kalmalı: zaman damgası kart, uzun ad jeton
+    # sanılıyordu. Beklenenler hub Scrubber'ıyla ortak vektörlerden.
+    def test_yukleme_dosya_adi_okunur_kalir(self):
+        for yol in (
+            "/uploads/discount/kampanya-gorseli-yaz-indirimi-1726571234567-752066249.jpeg",
+            "/uploads/sliders/slider-slider-1726571234567-249230604-1726571239999-875783343.png",
+            "/uploads/products/urun-1795123456789-123456789.png",
+        ):
+            self.assertEqual(yol, scrubber.path(yol))
+
+    def test_kart_yalnizca_gercekse_maskelenir(self):
+        self.assertEqual("kart [kart] red", scrubber.text("kart 4111111111111111 red", 500))
+        self.assertEqual("[kart] red", scrubber.text("378282246310005 red", 500))
+        self.assertEqual("saat 1726571234567 geçti", scrubber.text("saat 1726571234567 geçti", 500))
+        self.assertEqual("no 4111111111111112", scrubber.text("no 4111111111111112", 500))
+        # Luhn'u tutan damga: yalnızca ilk hane kuralı ayırıyor.
+        self.assertEqual("saat 1726571234573 geçti", scrubber.text("saat 1726571234573 geçti", 500))
+
+    def test_90_onekli_telefon_maskelenir(self):
+        # Sol sınır eklenince + olmadan 90 ön eki sızıyordu (önceden "9[telefon]").
+        self.assertEqual("tel [telefon]", scrubber.text("tel 905321234567", 500))
+        self.assertEqual("tel [telefon]", scrubber.text("tel 90 532 123 45 67", 500))
+
+    def test_rastgele_diziler_yeni_kuralla_maskelenir(self):
+        for girdi in (
+            "x 3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b y",
+            "x ghp_16C7e42F292c6912E7710c838347Ae178B4a y",
+            "x a1b2c3d4-e5f6a7b8-c9d0e1f2-a3b4c5d6 y",
+        ):
+            self.assertEqual("x [jeton] y", scrubber.text(girdi, 500))
+
 if __name__ == "__main__":
     unittest.main()

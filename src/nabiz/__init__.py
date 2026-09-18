@@ -27,6 +27,7 @@ import threading
 
 from . import scrubber
 from .env import env as read_env
+from .release import detect as detect_release_label
 from .reporter import SDK_VERSION, Reporter
 
 __version__ = SDK_VERSION
@@ -42,18 +43,26 @@ HEARTBEAT_SECONDS = 8 * 60 * 60
 _instance = None
 _heartbeat = None
 _heartbeat_stop = None
+#: hook_process süreç başına bir kez kurulur; her çağrı excepthook'u bir kat
+#: daha zincirliyordu (NabizFlask iki kez, her ASGI yığını kurulumu).
+_hooks_installed = False
 # RLock: start_heartbeat kilidi tutarken reporter() çağırıyor ve düz bir Lock
 # burada kendi kendine kilitleniyordu.
 _lock = threading.RLock()
 
 
-def from_environment():
+def from_environment(detect_release=True):
     """Ortam değişkenlerinden yapılandırma.
 
     İsimler kardeş paketlerle (Laravel, Node) birebir aynı: aynı projeyi iki
     dilde izleyen ekip iki ayrı isim seti öğrenmek zorunda kalmasın.
+
+    ``release`` boşsa kendiliğinden bulunur (bkz. ``nabiz.release``):
+    ``NABIZ_RELEASE`` → CI/PaaS commit değişkenleri → çalışma dizinindeki
+    ``.git``. Kurulumda bir kez çözülür, olay başına değil.
     """
     values = read_env()
+    release = detect_release_label(values=values)[0] if detect_release else None
 
     return {
         "enabled": values.get("NABIZ_ENABLED") != "false",
@@ -61,7 +70,7 @@ def from_environment():
         "key": values.get("NABIZ_KEY"),
         "secret": values.get("NABIZ_SECRET"),
         "env": values.get("NABIZ_ENV") or os.environ.get("APP_ENV") or "production",
-        "release": values.get("NABIZ_RELEASE"),
+        "release": release,
         "timeout": _number(values.get("NABIZ_TIMEOUT"), 2.0),
         "slow_request_ms": _number(values.get("NABIZ_SLOW_REQUEST_MS"), 1000),
     }
@@ -75,7 +84,8 @@ def init(**options):
     """
     global _instance
 
-    settings = from_environment()
+    # Açıkça verilen release kazanır; o durumda .git okunmaz.
+    settings = from_environment(detect_release=options.get("release") is None)
     settings.update({key: value for key, value in options.items() if value is not None})
 
     _instance = Reporter(**settings)
@@ -84,6 +94,14 @@ def init(**options):
     # yoktur ve temizlenmezse olaylar ölü bir kuyruğa yazılır.
     if hasattr(os, "register_at_fork"):
         os.register_at_fork(after_in_child=_instance._after_fork)
+
+    # Kancalar init'ten önce kurulduysa (NabizFlask(app) sonra nabiz.init(...))
+    # canlılık o an yapılandırma eksik diye başlamamıştı; burada yeniden denenir.
+    if _hooks_installed:
+        try:
+            start_heartbeat()
+        except Exception:  # noqa: BLE001
+            pass
 
     return _instance
 
@@ -100,9 +118,13 @@ def reporter():
 
 def report(error, kind=None, route=None, method=None, block=False):
     """Bir hatayı hub'a bildirir. Hiçbir koşulda hata fırlatmaz."""
-    return reporter().record_exception(
-        error, kind=kind, route=route, method=method, block=block
-    )
+    try:
+        return reporter().record_exception(
+            error, kind=kind, route=route, method=method, block=block
+        )
+    except Exception as failure:  # noqa: BLE001
+        # reporter() kurulumda patlayabilir (bozuk .env vb.); söz "fırlatmaz".
+        return {"sent": False, "status": None, "error": str(failure)}
 
 
 def hook_process():
@@ -111,13 +133,29 @@ def hook_process():
     Davranış **değiştirilmez**: mevcut hook zincirlenerek çağrılır, süreç
     sonlandırılmaz, çıkış kodu değiştirilmez. Bir izleme paketinin süreç
     yönetimine karışması, çözdüğü sorundan büyük bir sorundur.
-    """
-    current = reporter()
 
+    Süreç başına **bir kez** kurulur; tekrar çağrı yalnızca canlılığı yeniden
+    dener. Kancalar raporlayıcıyı çağrı anında çözer: kurulumdan sonra
+    ``nabiz.init(...)`` çağrılırsa olaylar yeni örneğe gider.
+    """
+    global _hooks_installed
+
+    with _lock:
+        if not _hooks_installed:
+            _hooks_installed = True
+            _install_hooks()
+
+    start_heartbeat()
+
+    return reporter()
+
+
+def _install_hooks():
     previous_hook = sys.excepthook
 
     def excepthook(exc_type, value, tb):
         try:
+            current = reporter()
             current.record_exception(value)
             # Süreç kapanıyor: daemon thread'in gönderimi bitirmesi beklenir,
             # yoksa son ve en önemli olay kaybolur.
@@ -138,7 +176,7 @@ def hook_process():
         def thread_excepthook(args):
             try:
                 if args.exc_value is not None:
-                    current.record_exception(args.exc_value)
+                    reporter().record_exception(args.exc_value)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -148,11 +186,18 @@ def hook_process():
 
     # Kapanışta kuyrukta kalanlar gönderilir; daemon thread aksi halde
     # yarıda kesilir.
-    atexit.register(lambda: current.flush(current.client.timeout + 1))
+    atexit.register(_flush_at_exit)
 
-    start_heartbeat()
 
-    return current
+def _flush_at_exit():
+    try:
+        current = _instance
+
+        # Hiç kurulmadıysa kapanışta raporlayıcı yaratılmaz.
+        if current is not None:
+            current.flush(current.client.timeout + 1)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def start_heartbeat(interval=HEARTBEAT_SECONDS):
@@ -180,7 +225,11 @@ def start_heartbeat(interval=HEARTBEAT_SECONDS):
 
         def beat():
             while not stop.wait(interval):
-                current.heartbeat(block=True)
+                try:
+                    # Çağrı anında çözülür: sonradan init edilen örneğe gider.
+                    reporter().heartbeat(block=True)
+                except Exception:  # noqa: BLE001
+                    pass
 
         # İlk istek kuyruktan gider ki kurulum anında bloke olmasın.
         current.heartbeat(block=False)

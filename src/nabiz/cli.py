@@ -10,11 +10,24 @@ aynı yanıtla karşılar. Yaptığı iş, yerelde yanlış olan ne varsa göste
 doğrulamanın hub panelinden yapılacağını söylemek.
 """
 
+import json
 import os
+import re
 import sys
+import urllib.request
 
 from . import __version__, init, report, reporter
 from .env import env as read_env
+from .release import detect as detect_release
+from .reporter import ENVIRONMENTS, normalize_env
+
+#: Paket PyPI'da değil; sürümler GitHub etiketlerinden okunur.
+TAGS_URL = "https://api.github.com/repos/AllturkoGit/nabiz-python/tags?per_page=100"
+REPO_URL = "https://github.com/AllturkoGit/nabiz-python.git"
+UPDATE_TIMEOUT = 2.0
+
+#: Kararlı sürüm: ``1.2.3`` ya da ``v1.2.3``; ön sürüm (``-rc1``) sayılmaz.
+_STABLE = re.compile(r"[vV]?(\d+)\.(\d+)\.(\d+)")
 
 #: Panelden gelen secret'in uzunluğu. En sık kurulum hatası eksik kopyalamadır
 #: ve sonucu sessizce hiçbir şey göndermemektir.
@@ -37,15 +50,26 @@ def main(argv=None):
 
     print("")
     _line("SDK sürümü", __version__)
+    _update_lines(values)
     _line("Etkin", "HAYIR (NABIZ_ENABLED=false)" if values.get("NABIZ_ENABLED") == "false" else "evet")
     _line("Hub adresi", url or "TANIMSIZ")
     _line("Proje anahtarı", values.get("NABIZ_KEY") or "TANIMSIZ")
     _line("Secret uzunluğu", f"{len(secret)} karakter" if secret else "TANIMSIZ")
-    _line("Ortam", values.get("NABIZ_ENV") or os.environ.get("APP_ENV") or "production")
+    env_raw = values.get("NABIZ_ENV") or os.environ.get("APP_ENV") or "production"
+    env_name = normalize_env(env_raw)
+    _line("Ortam", env_name if env_name == env_raw else f"{env_name} ({env_raw})")
     _line("Python", sys.version.split()[0])
+    release, source = detect_release(values=values)
+    _line("Sürüm etiketi", f"{release or 'tanımsız'} (kaynak: {source or 'yok'})")
     print("")
 
     problems = []
+
+    if env_name not in ENVIRONMENTS:
+        problems.append(
+            f'Ortam "{env_raw}" hub tarafından kabul edilmez — olaylar ve canlılık sessizce '
+            "reddedilir. NABIZ_ENV=production, staging ya da local yazın."
+        )
 
     if values.get("NABIZ_ENABLED") == "false":
         problems.append("NABIZ_ENABLED=false — hiçbir veri gönderilmez.")
@@ -100,6 +124,75 @@ def main(argv=None):
     print("")
 
     return 0
+
+
+def _update_lines(values):
+    """GitHub etiketlerindeki en yeni kararlı sürüm; yeniyse uyarı.
+
+    Uyarıdır, hata değil: çıkış kodu değişmez — güncelleme döngüsündeki
+    betikler eski sürümü "bozuk kurulum" saymasın. Ağ yoksa ya da hız
+    sınırına takıldıysa "denetlenemedi" yazılır. ``NABIZ_DURUM_CEVRIMDISI=1``
+    denetimi tamamen atlar.
+    """
+    try:
+        flag = os.environ.get("NABIZ_DURUM_CEVRIMDISI") or values.get("NABIZ_DURUM_CEVRIMDISI")
+
+        if str(flag or "").strip().lower() in ("1", "true", "yes", "on", "evet"):
+            return
+
+        latest = latest_version()
+
+        if latest is None:
+            _line("Güncel sürüm", "denetlenemedi")
+            return
+
+        _line("Güncel sürüm", latest)
+
+        installed = _stable(__version__)
+
+        if installed is None or _stable(latest) > installed:
+            print(
+                f"  ! Güncelleme var: pip install -U --force-reinstall "
+                f'"allturko-nabiz @ git+{REPO_URL}@v{latest}"'
+            )
+    except Exception:  # noqa: BLE001
+        _line("Güncel sürüm", "denetlenemedi")
+
+
+def latest_version(timeout=UPDATE_TIMEOUT):
+    """En yüksek kararlı etiket (``"0.1.2"``) ya da ``None``. Hiç fırlatmaz."""
+    try:
+        request = urllib.request.Request(
+            TAGS_URL,
+            headers={
+                "User-Agent": f"allturko-nabiz/{__version__} (nabiz-durum)",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            tags = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+
+        versions = [
+            _stable(tag.get("name")) for tag in tags if isinstance(tag, dict)
+        ]
+        versions = [version for version in versions if version is not None]
+
+        if not versions:
+            return None
+
+        return ".".join(str(part) for part in max(versions))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stable(name):
+    if not isinstance(name, str):
+        return None
+
+    match = _STABLE.fullmatch(name.strip())
+
+    return tuple(int(part) for part in match.groups()) if match else None
 
 
 def _report_result(label, result):

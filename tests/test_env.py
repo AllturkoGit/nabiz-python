@@ -73,6 +73,17 @@ class EnvTest(unittest.TestCase):
     def test_dosya_yoksa_patlamaz(self):
         self.assertIsInstance(env_module.env(), dict)
 
+    def test_utf8_olmayan_dosya_atlanir(self):
+        # Windows'ta cp1254/latin-1 kaydedilmiş .env UnicodeDecodeError
+        # fırlatıp uygulamanın açılışını düşürüyordu.
+        Path(self.directory, ".env").write_bytes(b"NABIZ_URL=https://x\nNOT=\xe7\xfc\n")
+        self.write(".env.local", "NABIZ_KEY=lens\n")
+
+        values = env_module.env()
+
+        self.assertNotIn("NABIZ_URL", values)
+        self.assertEqual("lens", values["NABIZ_KEY"])
+
 
 if __name__ == "__main__":
     unittest.main()

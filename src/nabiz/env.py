@@ -76,8 +76,10 @@ def _read(name):
     try:
         with open(os.path.join(os.getcwd(), name), "r", encoding="utf-8") as handle:
             content = handle.read()
-    except OSError:
-        # Dosya yoksa ya da okunamıyorsa sessizce geç.
+    except (OSError, ValueError):
+        # Dosya yoksa, okunamıyorsa ya da UTF-8 değilse (UnicodeDecodeError bir
+        # ValueError) sessizce geç: Windows'ta cp1254 kaydedilmiş bir .env
+        # uygulamanın açılışını düşürüyordu.
         return values
 
     for raw in content.splitlines():

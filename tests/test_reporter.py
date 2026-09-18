@@ -80,6 +80,49 @@ class ReporterTest(unittest.TestCase):
         self.assertEqual(250, body["duration_ms"])
         self.assertEqual("GET /ara", body["route"])
 
+    def test_istek_olayi_bellek_tasir(self):
+        from nabiz.reporter import memory_mb
+
+        with FakeHub(SECRET) as hub:
+            reporter_for(hub, slow_request_ms=100).record_request("/ara", "GET", 200, 250, block=True)
+
+        body = hub.requests[0]["body"]
+        self.assertTrue(hub.requests[0]["accepted"])
+
+        if sys.platform.startswith("win"):  # pragma: no cover
+            self.assertNotIn("memory_mb", body)
+        else:
+            self.assertIsInstance(body["memory_mb"], int)
+            self.assertGreater(body["memory_mb"], 0)
+            self.assertEqual(memory_mb(), body["memory_mb"])
+
+    def test_bellek_birimi_platforma_gore(self):
+        # ru_maxrss Linux'ta KB, macOS'ta bayt.
+        from types import SimpleNamespace
+        from unittest import mock
+
+        try:
+            import resource
+        except ImportError:  # pragma: no cover
+            self.skipTest("resource yok (Windows)")
+
+        from nabiz.reporter import memory_mb
+
+        usage = SimpleNamespace(ru_maxrss=200 * 1024)
+
+        with mock.patch.object(resource, "getrusage", return_value=usage), \
+                mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(200, memory_mb())
+
+        usage = SimpleNamespace(ru_maxrss=200 * 1048576)
+
+        with mock.patch.object(resource, "getrusage", return_value=usage), \
+                mock.patch.object(sys, "platform", "darwin"):
+            self.assertEqual(200, memory_mb())
+
+        with mock.patch.object(resource, "getrusage", side_effect=OSError("yok")):
+            self.assertIsNone(memory_mb())
+
     def test_sunucu_hatasi_5xx_olarak_raporlanir(self):
         with FakeHub(SECRET) as hub:
             reporter_for(hub).record_request("/api/analiz", "POST", 500, 20, block=True)
@@ -124,8 +167,9 @@ class ReporterTest(unittest.TestCase):
 
         self.assertEqual([], hub.requests)
 
-    def test_gecersiz_ortam_productiona_dusurulur(self):
-        # Hub küme dışı env'i sessizce atar; SDK bunu hiç göndermemeli.
+    def test_takma_ad_ortam_karsiligina_cevrilir(self):
+        # Hub küme dışı env'i sessizce atar; takma adlar karşılığına çevrilir
+        # (tanınmayanlar için bkz. test_environment.py).
         self.assertEqual("production", Reporter(env="prod").env)
         self.assertEqual("staging", Reporter(env="staging").env)
 

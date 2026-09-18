@@ -23,14 +23,50 @@ PATTERNS = [
     # "/kullanici/a@b.com/profil" yolunun tamamını maskelerdi.
     (re.compile(r"[\w.%+-]+@[\w.-]+\.[^\W\d_]{2,}"), "[eposta]"),
     (re.compile(r"\bTR(?:[\s-]?\d){24}\b", re.IGNORECASE), "[iban]"),
-    (re.compile(r"\b\d(?:[\s-]?\d){12,18}\b"), "[kart]"),
+    # Aday; karar _is_card'da — dosya adındaki zaman damgası kart sanılmasın.
+    (re.compile(r"\b\d(?:[\s-]?\d){12,18}\b"), lambda m: "[kart]" if _is_card(m.group(0)) else m.group(0)),
     (re.compile(r"\b[1-9]\d{10}\b"), "[tckn]"),
-    (re.compile(r"(?:\+90|0)?[\s-]?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b"), "[telefon]"),
+    # Önünde rakam olamaz: "1795123456789" damgası "179[telefon]" oluyordu.
+    (re.compile(r"(?<!\d)(?:\+?90|0)?[\s-]?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b"), "[telefon]"),
     # Uzun rastgele diziler: oturum kimliği, API anahtarı, jeton, hash.
     # 24 hane eşiği bilinçli: oturum kimlikleri 40, API anahtarları 32+
     # karakterdir; normal kelimeler ve sınıf adları bu uzunluğa ulaşmaz.
-    (re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{23,}"), "[jeton]"),
+    # Aday; karar _is_token'da — okunur dosya adları maskelenmesin.
+    (re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{23,}"), lambda m: "[jeton]" if _is_token(m.group(0)) else m.group(0)),
 ]
+
+
+def _is_card(candidate):
+    """Gerçek kart: 2-9 ile başlar ve Luhn'dan geçer. Zaman damgası 1 ile başlar."""
+    digits = re.sub(r"\D", "", candidate)
+    if not digits or digits[0] < "2":
+        return False
+
+    total = 0
+    double = False
+    for ch in reversed(digits):
+        d = int(ch)
+        if double:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        double = not double
+
+    return total % 10 == 0
+
+
+def _is_token(candidate):
+    """Rastgele dizi: 16+ karakterlik bölünmemiş parça ya da harf içeren hex.
+
+    Tireyle birleşmiş kısa parçalar okunur addır: ``kampanya-gorseli-1726571234567``.
+    """
+    if any(len(part) >= 16 for part in re.split(r"[-_]", candidate)):
+        return True
+
+    compact = re.sub(r"[-_]", "", candidate)
+
+    return bool(re.fullmatch(r"[0-9a-fA-F]+", compact)) and bool(re.search(r"[a-fA-F]", compact))
 
 _SQL_LITERALS = [
     (re.compile(r"'(?:[^']|'')*'"), "?"),
